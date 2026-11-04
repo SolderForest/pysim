@@ -230,15 +230,22 @@ class LinkBase(abc.ABC):
             pcmd = ProactiveCommand()
             parsed = pcmd.from_tlv(h2b(fetch_rv[0]))
             log.info("FETCH: %s (%s)", fetch_rv[0], type(parsed).__name__)
+            # The handler is also needed when no custom handler is installed: a
+            # TERMINAL RESPONSE *must* always be sent, otherwise the UICC keeps its
+            # proactive session open and ignores/refuses all further commands until
+            # a card reset (this is what makes OTA testing "freeze" a SIM).
+            ti_list = None
             if self.proactive_handler:
                 # Extension point: If this does return a list of TLV objects,
                 # they could be appended after the Result; if the first is a
                 # Result, that cuold replace the one built here.
                 ti_list = self.proactive_handler.receive_fetch_raw(pcmd, parsed)
-                if not ti_list:
-                    ti_list = self.proactive_handler.prepare_response(pcmd, 'FIXME')
-            else:
-                ti_list = self.proactive_handler.prepare_response(pcmd, 'command_beyond_terminal_capability')
+            if not ti_list:
+                # Either there is no handler at all, or the handler produced no
+                # response (e.g. it only logged the command): reply "command
+                # beyond terminal capability" (TS 102 223 6.8.3, result 0x30).
+                handler = self.proactive_handler if self.proactive_handler else ProactiveHandler()
+                ti_list = handler.prepare_response(parsed, 'command_beyond_terminal_capability')
 
             # Send response immediately, thus also flushing out any further
             # proactive commands that the card already wants to send

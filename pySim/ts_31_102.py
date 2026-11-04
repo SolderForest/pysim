@@ -49,6 +49,7 @@ from pySim.ts_31_102_telecom import DF_PHONEBOOK, EF_UServiceTable
 from pySim.ts_31_103_shared import EF_IMSConfigData, EF_XCAPConfigData, EF_MuDMiDConfigData
 from pySim.ts_31_103_shared import EF_AC_GBAUAPI, EF_IMSDCI
 from pySim.cat import SMS_TPDU, DeviceIdentities, SMSPPDownload
+from pySim.sms import SMS_DELIVER as SmsDeliver
 
 # Mapping between USIM Service Number and its description
 EF_UST_map = {
@@ -1810,8 +1811,26 @@ class ADF_USIM(CardADF):
             with a PID of 'SMS for the SIM card'.  You can use this
             command in the context of testing OTA related features
             without a modem/phone or a cellular network."""
+            tpdu_bin = h2b(opts.TPDU)
+            # The ENVELOPE (SMS-PP download) always carries a SMS-DELIVER TPDU. Parse it, so that
+            # a typo in the hex string is reported here instead of being passed to the card as
+            # an unparsable blob (which answers 6F00 / 6A80 / 6700 and is hard to debug).
+            try:
+                tpdu = SmsDeliver.from_bytes(tpdu_bin)
+            except Exception as e:
+                raise ValueError('TPDU is not a parsable SMS-DELIVER: %s' % e) from e
+            # Warnings, not errors: cards differ in how strict they are.
+            if tpdu.tp_udl != len(tpdu.tp_ud):
+                self._cmd.pwarning('TP-UDL is %u but the user data is %u bytes long'
+                                   % (tpdu.tp_udl, len(tpdu.tp_ud)))
+            if tpdu.tp_pid != 0x7f:
+                self._cmd.pwarning('TP-PID is 0x%02x; 0x7f (SIM data download) is expected for OTA'
+                                   % tpdu.tp_pid)
+            if not tpdu.tp_udhi:
+                self._cmd.pwarning('TP-UDHI is not set; OTA TPDUs normally start the user data '
+                                   'with a UDH (02 70 00)')
             tpdu_ie = SMS_TPDU()
-            tpdu_ie.from_bytes(h2b(opts.TPDU))
+            tpdu_ie.from_bytes(tpdu_bin)
             dev_ids = DeviceIdentities(
                 decoded={'source_dev_id': 'network', 'dest_dev_id': 'uicc'})
             sms_dl = SMSPPDownload(children=[dev_ids, tpdu_ie])
