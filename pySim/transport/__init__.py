@@ -60,12 +60,15 @@ class ProactiveHandler(abc.ABC):
     command."""
     def receive_fetch_raw(self, pcmd: ProactiveCommand, parsed: Hexstr):
         # try to find a generic handler like handle_SendShortMessage
+        # NOTE: 'parsed' is the actually decoded proactive command (a ProactiveCommand subclass
+        # instance with .children), whereas 'pcmd' is only the collection wrapper that was used
+        # to parse it. Handlers expect the former (they inspect .children), so pass it on as-is.
         handle_name = 'handle_%s' % type(parsed).__name__
         if hasattr(self, handle_name):
             handler = getattr(self, handle_name)
-            return handler(pcmd.decoded)
+            return handler(parsed)
         # fall back to common handler
-        return self.receive_fetch(pcmd)
+        return self.receive_fetch(parsed)
 
     def receive_fetch(self, pcmd: ProactiveCommand):
         """Default handler for not otherwise handled proactive commands."""

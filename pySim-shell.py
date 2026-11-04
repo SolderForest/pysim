@@ -67,7 +67,7 @@ from pySim.filesystem import CardMF, CardEF, CardDF, CardADF, LinFixedEF, Transp
 from pySim.ts_102_221 import pin_names
 from pySim.ts_102_222 import Ts102222Commands
 from pySim.gsm_r import DF_EIRENE
-from pySim.cat import ProactiveCommand
+from pySim.cat import ProactiveCommand, SMS_TPDU
 
 from pySim.card_key_provider import card_key_provider_argparse_add_args, card_key_provider_init
 from pySim.card_key_provider import card_key_provider_get_field, card_key_provider_get
@@ -1108,8 +1108,16 @@ class Iso7816Commands(CommandSet):
 
 class Proact(ProactiveHandler):
     def receive_fetch(self, pcmd: ProactiveCommand):
-        # print its parsed representation
-        print(pcmd.decoded)
+        # print its parsed representation ('pcmd' is the decoded proactive command itself, e.g.
+        # a SendShortMessage instance holding the child IEs in .children)
+        print(pcmd)
+        # An OTA response packet is delivered by the card inside a proactive SEND SHORT MESSAGE
+        # command (TS 31.111, secured packet as per 3GPP TS 23.048). Print the SMS TPDU as a
+        # plain hex string, so it can be copied verbatim into the next step of a manual OTA
+        # procedure instead of being buried in the dict above.
+        for ie in getattr(pcmd, 'children', []) or []:
+            if isinstance(ie, SMS_TPDU):
+                print('SMS TPDU response (FETCH): %s' % b2h(ie.to_bytes()))
         # TODO: implement the basics, such as SMS Sending, ...
 
 
