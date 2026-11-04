@@ -68,6 +68,7 @@ from pySim.ts_102_221 import pin_names
 from pySim.ts_102_222 import Ts102222Commands
 from pySim.gsm_r import DF_EIRENE
 from pySim.cat import ProactiveCommand, SMS_TPDU
+from pySim.ota import summarize_ota_tpdu
 
 from pySim.card_key_provider import card_key_provider_argparse_add_args, card_key_provider_init
 from pySim.card_key_provider import card_key_provider_get_field, card_key_provider_get
@@ -1117,7 +1118,12 @@ class Proact(ProactiveHandler):
         # procedure instead of being buried in the dict above.
         for ie in getattr(pcmd, 'children', []) or []:
             if isinstance(ie, SMS_TPDU):
-                print('SMS TPDU response (FETCH): %s' % b2h(ie.to_bytes()))
+                raw_tpdu = ie.to_bytes()
+                print('SMS TPDU response (FETCH): %s' % b2h(raw_tpdu))
+                try:
+                    print('  %s' % summarize_ota_tpdu(raw_tpdu))
+                except ValueError as e:
+                    print('  (not decoded: %s)' % e)
         # TODO: implement the basics, such as SMS Sending, ...
 
 

@@ -24,9 +24,9 @@ from construct import Flag, Padding, Switch, this, PrefixedArray, GreedyRange
 from construct import Const, Prefixed, Select, Construct, SizeofError, stream_read, stream_write
 from osmocom.construct import *
 from osmocom.tlv import bertlv_encode_len
-from osmocom.utils import b2h
+from osmocom.utils import b2h, h2b
 
-from pySim.sms import UserDataHeader
+from pySim.sms import SMS_DELIVER, SMS_SUBMIT, UserDataHeader
 
 # ETS TS 102 225 gives the general command structure and the dialects for CAT_TP, TCP/IP and HTTPS
 # 3GPP TS 31.115 gives the dialects for SMS-PP, SMS-CB, USSD and HTTP
@@ -735,3 +735,94 @@ class OtaDialectSms(OtaDialect):
         else:
             dec = None
         return (res, dec)
+
+
+def _hex_or_none(data: bytes) -> str:
+    """Format a byte string as hex including its length, or '(none)' if it is empty."""
+    if not len(data):
+        return '(none)'
+    return '%s(%uB)' % (data.hex(), len(data))
+
+
+def summarize_ota_tpdu(tpdu: Union[bytes, str]) -> str:
+    """Summarize an SMS TPDU that carries an OTA packet, in a single line.
+
+    Decodes the T-PDU (3GPP TS 23.040), its User Data Header (TS 23.040 9.2.3.24) and - if the
+    UDH marks the packet as OTA - the secured packet header (TS 102 225) or the response packet
+    (3GPP TS 31.115):
+       IEIa 0x70 ('02 70 00'): command packet, e.g. inside ENVELOPE (SMS-PP download)
+       IEIa 0x71 ('02 71 00'): response packet / PoR, e.g. inside proactive SEND SHORT MESSAGE
+
+    This is meant for interactive diagnosis (pySim-shell prints it for TPDUs retrieved by FETCH),
+    it deliberately does not verify any CC/RC or decrypt anything (that needs an OtaKeyset).
+
+    Args:
+        tpdu: raw encoded TPDU, either as bytes or as hex string
+    Returns:
+        a human readable one-line description
+    Raises:
+        ValueError: if the TPDU (or the OTA packet inside it) cannot be parsed
+    """
+    if isinstance(tpdu, str):
+        tpdu = h2b(tpdu)
+    if len(tpdu) < 2:
+        raise ValueError('TPDU too short (%u bytes)' % len(tpdu))
+
+    tp_mti = tpdu[0] & 0x03
+    try:
+        if tp_mti == 0:
+            parsed, kind = SMS_DELIVER.from_bytes(tpdu), 'SMS-DELIVER'
+        elif tp_mti == 1:
+            parsed, kind = SMS_SUBMIT.from_bytes(tpdu), 'SMS-SUBMIT'
+        else:
+            raise ValueError('unsupported TP-MTI %u (only SMS-DELIVER and SMS-SUBMIT)' % tp_mti)
+    except (IndexError, KeyError, ConstructError) as e:
+        raise ValueError('cannot parse TPDU: %s' % e) from e
+
+    ud = bytes(parsed.tp_ud)
+    if not parsed.tp_udhi:
+        return '%s, no UDH, UDL=%u, UD=%u bytes' % (kind, parsed.tp_udl, len(ud))
+
+    try:
+        udh, remainder = UserDataHeader.from_bytes(ud)
+    except ConstructError as e:
+        raise ValueError('cannot parse UDH: %s' % e) from e
+    ieis = ' '.join('0x%02x' % ie['iei'] for ie in udh.ies)
+
+    if udh.has_ie(0x71):
+        # response packet / PoR: RPL RHL TAR CNTR PCNTR STS CC/RC [secured data]
+        try:
+            rsp = OtaDialectSms.SmsResponsePacket.parse(remainder)
+        except ConstructError as e:
+            raise ValueError('cannot parse OTA response packet: %s' % e) from e
+        return ('%s, UDH [%s] OTA response: rpl=%u rhl=%u, tar=%s, cntr=%s, pcntr=%u, '
+                'status=%s, cc_rc=%s, secured_data=%s'
+                % (kind, ieis, rsp.rpl, rsp.rhl, rsp.tar.hex(), rsp.cntr.hex(), rsp.pcntr,
+                   rsp.response_status, _hex_or_none(rsp.cc_rc),
+                   _hex_or_none(rsp.secured_data)))
+
+    if udh.has_ie(0x70):
+        # command packet: CPL CHL SPI KIc KId TAR CNTR PCNTR CC/RC [secured data]
+        try:
+            cpl = int.from_bytes(remainder[0:2], 'big')
+            pkt = remainder[2:]
+            hdr = OtaDialectSms.hdr_construct.parse(pkt[0:8])
+        except (IndexError, ConstructError) as e:
+            raise ValueError('cannot parse OTA command packet: %s' % e) from e
+        sig_len = hdr.chl - 13
+        if sig_len < 0 or len(pkt) < 14 + sig_len:
+            raise ValueError('inconsistent OTA command packet (chl=%u, %u bytes present)'
+                             % (hdr.chl, len(pkt)))
+        cntr = pkt[8:13]
+        pcntr = pkt[13]
+        cc_rc = pkt[14:14+sig_len]
+        secured_data = pkt[14+sig_len:]
+        return ('%s, UDH [%s] OTA command: cpl=%u/%u bytes, chl=%u, tar=%s, '
+                'spi(ciphering=%s, rc_cc_ds=%s, counter=%s), kic=%u/%s, kid=%u/%s, '
+                'cntr=%s, pcntr=%u, cc_rc=%s, secured_data=%s'
+                % (kind, ieis, cpl, len(pkt), hdr.chl, hdr.tar.hex(),
+                   hdr.spi.ciphering, hdr.spi.rc_cc_ds, hdr.spi.counter,
+                   hdr.kic.key, hdr.kic.algo, hdr.kid.key, hdr.kid.algo,
+                   cntr.hex(), pcntr, _hex_or_none(cc_rc), _hex_or_none(secured_data)))
+
+    return '%s, UDH [%s], no OTA IEIa (0x70/0x71), UD=%u bytes' % (kind, ieis, len(ud))
