@@ -69,7 +69,8 @@ class SimCardCommands:
         self.sel_ctrl = "0000"
         self.lchan_nr = lchan_nr
         # invokes the setter below
-        self.cla_byte = "a0"
+        #self.cla_byte = "a0"
+        self.cla_byte = "00"
         self.scp = None # Secure Channel Protocol
 
     def fork_lchan(self, lchan_nr: int) -> 'SimCardCommands':
