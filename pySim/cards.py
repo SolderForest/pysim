@@ -91,7 +91,8 @@ class SimCardBase(CardBase):
 
     def __init__(self, scc: SimCardCommands):
         super().__init__(scc)
-        self._scc.cla_byte = "A0"
+        #self._scc.cla_byte = "A0"
+        self._scc.cla_byte = "00"
         self._scc.sel_ctrl = "0000"
 
     def probe(self) -> bool:
