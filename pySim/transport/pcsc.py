@@ -26,7 +26,6 @@ from smartcard.CardRequest import CardRequest
 from smartcard.Exceptions import NoCardException, CardRequestTimeoutException, CardConnectionException
 from smartcard.System import readers
 from smartcard.ExclusiveConnectCardConnection import ExclusiveConnectCardConnection
-from smartcard.ATR import ATR
 
 from osmocom.utils import h2i, i2h, Hexstr
 
@@ -84,22 +83,18 @@ class PcscSimLink(LinkBaseTpdu):
             # To avoid leakage of resources, make sure the reader is disconnected
             self.disconnect()
 
-            # Make card connection and select a suitable communication protocol
-            # (Even though pyscard provides an automatic protocol selection, we will make an independent decision
-            #  based on the ATR. There are two reasons for that:
-            #  1) In case a card supports T=0 and T=1, we perfer to use T=0.
-            #  2) The automatic protocol selection may be unreliabe on some platforms
-            #     see also: https://osmocom.org/issues/6952)
-            self._con.connect()
-            atr = ATR(self._con.getATR())
-            if atr.isT0Supported():
-                self._con.setProtocol(CardConnection.T0_protocol)
+            # Let PC/SC negotiate the transport protocol and use the active protocol reported by pyscard.
+            # The ATR only describes the supported protocols; it does not tell us which one was negotiated.
+            # Moreover, setProtocol() after connect() only changes pyscard's local transmit header, not the
+            # protocol of the established card connection.
+            self._con.connect(CardConnection.T0_protocol | CardConnection.T1_protocol)
+            protocol = self._con.getProtocol()
+            if protocol == CardConnection.T0_protocol:
                 self.set_tpdu_format(0)
-            elif atr.isT1Supported():
-                self._con.setProtocol(CardConnection.T1_protocol)
+            elif protocol == CardConnection.T1_protocol:
                 self.set_tpdu_format(1)
             else:
-                raise ReaderError('Unsupported card protocol')
+                raise ReaderError('Unsupported negotiated card protocol: %s' % protocol)
         except CardConnectionException as exc:
             raise ProtocolError() from exc
         except NoCardException as exc:
